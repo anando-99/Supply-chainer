@@ -1,10 +1,13 @@
 from fastapi import FastAPI, WebSocket, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional, List
 import asyncio
 import json
 import random
 import os
+import csv
+import io
 from contextlib import asynccontextmanager
 
 from fastapi.middleware.cors import CORSMiddleware
@@ -163,6 +166,22 @@ def recommend_routes(req: RecommendRequest):
         overrides=req.overrides
     )
     return result
+
+@app.get("/api/routes/history")
+def route_history():
+    """Recent decision records for the command dashboard or a TMS integration."""
+    return {"routes": recommender.audit_store.recent()}
+
+@app.get("/api/routes/export.csv")
+def export_route_history():
+    rows = recommender.audit_store.recent()
+    columns = ["timestamp", "origin", "destination", "scenario", "persona", "eta_hours", "p85_hours", "risk", "cost_usd"]
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=columns)
+    writer.writeheader()
+    writer.writerows(rows)
+    return StreamingResponse(iter([output.getvalue()]), media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=supplychainer-route-audit.csv"})
 
 @app.post("/api/suppliers")
 def get_suppliers(req: SourcingRequest):

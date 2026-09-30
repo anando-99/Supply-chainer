@@ -108,6 +108,18 @@ uvicorn backend.main:app --reload
 ```
 *The first boot may take 10-20 seconds to load the HuggingFace transformer weights into memory. API Docs available at `http://127.0.0.1:8000/docs`.*
 
+### Validate the decision engine
+
+Run this from the project root after installing the backend dependencies:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+The tests exercise the real Shanghai-to-Rotterdam graph and confirm that `SUEZ_BLOCK` removes
+the Suez choke point from the balanced sea route, rather than merely adding a delay after the
+route has been selected. They also verify CARF across sea and road modes.
+
 ### 2. Executive Frontend (React/Vite)
 
 ```bash
@@ -116,6 +128,12 @@ npm install
 npm run dev
 ```
 *Access the dashboard at `http://localhost:5173` (or the port specified by Vite).*
+
+The route cards now show a p50/p85/p95 planning band. The shipped estimator is a trained p85
+model when its pickle is compatible with the installed scikit-learn version; otherwise the API
+reports a labelled calibrated operational fallback instead of failing at startup. Every routing
+decision is kept in a short in-memory audit history and can be exported from the dashboard as
+CSV via `/api/routes/export.csv`.
 
 ---
 

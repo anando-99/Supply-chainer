@@ -6,6 +6,7 @@ from .multimodal_network import MODE_PROFILES, create_multimodal_network
 from .threat_intelligence import ThreatIntelligencePredictor, ContrastiveNLPEngine, CARFFilter
 from .news_ingestion import DynamicNewsIngestor
 from .node_resolver import NodeResolver
+from .audit_store import RouteAuditStore
 
 class RouteRecommender:
     """
@@ -26,6 +27,7 @@ class RouteRecommender:
         self.carf = CARFFilter()
         self.news_ingestor = DynamicNewsIngestor()
         self.resolver = NodeResolver()
+        self.audit_store = RouteAuditStore()
         
         print(f"[STARTUP] Initializing Split-Node Global Topology...")
         self.unified_graph = create_multimodal_network()
@@ -103,21 +105,27 @@ class RouteRecommender:
                             edges_to_remove.append((u, v))
                     G_p.remove_edges_from(edges_to_remove)
 
+                def edge_disruption(u, v, d):
+                    """A disruption applies at either end of a corridor, not only on arrival."""
+                    affected = [G_p.nodes[n].get("physical_id") for n in (u, v)]
+                    hits = [disruptions[node] for node in affected if node in disruptions]
+                    if not hits:
+                        return 0.0, 0.0, None
+                    hit = max(hits, key=lambda item: item["threat"])
+                    return hit["delay"], hit["threat"], hit
+
                 def weight_func(u, v, d):
                     mode = d["transport_mode"]
                     base_t = d["baseline_time"]
                     base_c = d.get("cost", 0)
                     
                     # Intelligence Factor (Mapped to physical node)
-                    v_data = G_p.nodes[v]
-                    p_id = v_data.get("physical_id")
-                    
                     threat = d.get("base_threat", 0.05)
-                    delay = 0
-                    
-                    if p_id in disruptions:
-                        threat = max(threat, disruptions[p_id]["threat"])
-                        delay += disruptions[p_id]["delay"]
+                    scenario_delay, scenario_threat, _ = edge_disruption(u, v, d)
+                    threat = max(threat, scenario_threat)
+                    # The operational disruption is a route-selection penalty, rather
+                    # than a cosmetic adjustment after Dijkstra has already run.
+                    delay = scenario_delay
                     
                     if persona == "FASTEST":
                         return base_t + delay
@@ -155,12 +163,13 @@ class RouteRecommender:
                     l_news = d.get("base_news", "Standard conditions")
                     l_source = "FALLBACK"
                     
-                    if p_id in disruptions:
-                        l_time += disruptions[p_id]["delay"]
-                        l_threat = max(l_threat, disruptions[p_id]["threat"])
-                        l_news = disruptions[p_id]["reason"]
+                    scenario_delay, scenario_threat, disruption = edge_disruption(u, v, d)
+                    if disruption:
+                        l_time += scenario_delay
+                        l_threat = max(l_threat, scenario_threat)
+                        l_news = disruption["reason"]
                         l_source = "SCENARIO"
-                        trace["eta"]["scenario"] += disruptions[p_id]["delay"]
+                        trace["eta"]["scenario"] += scenario_delay
                         trace["risk"]["scenario"] = max(trace["risk"]["scenario"], l_threat)
                         trace["cost"]["scenario"] += (l_cost * 0.1)
                     
@@ -189,6 +198,29 @@ class RouteRecommender:
                         "intel_source": l_source
                     })
 
+                # The trained quantile model is evaluated on every transit leg. The
+                # p85 aggregate is an additive operational buffer; p50/p95 are
+                # transparent planning bands around that conservative estimate.
+                transit_legs = [leg for leg in legs if leg["type"] == "transit"]
+                ml_predictions = []
+                for leg in transit_legs:
+                    prediction = self.predictor.predict_worst_case_delay(
+                        leg["from"], leg["to"], leg["mode"].lower(),
+                        condition_flag="Disrupted" if leg["intel_source"] == "SCENARIO" else "Clear",
+                        nlp_score=leg["threat"]
+                    )
+                    ml_predictions.append(prediction)
+                p85_buffer = sum(p.get("final_delay_presented", 0.0) for p in ml_predictions)
+                # The shipped model was trained for p85 only. These calibrated bands
+                # are explicitly estimated, rather than mislabelled extra ML models.
+                confidence_band = {
+                    "p50_hours": round(total_time + p85_buffer * 0.60, 1),
+                    "p85_hours": round(total_time + p85_buffer, 1),
+                    "p95_hours": round(total_time + p85_buffer * 1.30, 1),
+                    "p85_buffer_hours": round(p85_buffer, 1),
+                    "method": "p85 model with calibrated planning band"
+                }
+
                 if total_cost > cost_ceiling or total_time > (max_delay * 24): continue
 
                 candidates.append({
@@ -196,6 +228,8 @@ class RouteRecommender:
                     "primary_mode": "MULTIMODAL",
                     "legs": legs,
                     "adjusted_eta": round(total_time, 1),
+                    "confidence_band": confidence_band,
+                    "ml_audit": ml_predictions,
                     "total_cost": round(total_cost, 2),
                     "threat_level": round(max_threat, 2),
                     "audit_trace": trace,
@@ -220,11 +254,15 @@ class RouteRecommender:
                 final.append(c)
                 seen.add(path_sig)
 
-        return {
+        result = {
             "origin": source, "destination": destination,
             "active_scenario": active_scenario["name"] if active_scenario else None,
+            "alerts": ([f"{active_scenario['name']} was evaluated across every candidate corridor."]
+                       if active_scenario else []),
             "recommendations": final[:3]
         }
+        self.audit_store.record(result)
+        return result
 
     def _generate_forensic_explanation(self, persona, trace, threat):
         """

@@ -21,6 +21,7 @@ const RouteRecommender = ({ onNavigate }) => {
   const [searchQuery, setSearchQuery] = useState({ source: '', dest: '' });
   const [searchResults, setSearchResults] = useState({ source: [], dest: [] });
   const [scenarios, setScenarios] = useState([]);
+  const [alerts, setAlerts] = useState([]);
 
   useEffect(() => {
     // Pull the live scenario list from the backend instead of hardcoding IDs here,
@@ -54,6 +55,7 @@ const RouteRecommender = ({ onNavigate }) => {
         setRecommendations([]);
       } else {
         setRecommendations(data.recommendations);
+        setAlerts(data.alerts || []);
       }
     } catch (err) {
       setError("Engine connection failed. Verify backend status.");
@@ -207,6 +209,9 @@ const RouteRecommender = ({ onNavigate }) => {
         )}
 
         {error && <div style={{color: '#ef4444', background: 'rgba(239, 68, 68, 0.1)', padding: '1rem', borderRadius: '8px', border: '1px solid #ef4444'}}>{error}</div>}
+        {alerts.map((alert, index) => <div key={index} style={{marginBottom: '0.75rem', color: '#fbbf24', fontSize: '0.8rem'}}><AlertTriangle size={14} style={{verticalAlign: 'middle'}} /> {alert}</div>)}
+
+        {recommendations.length > 0 && <a className="sc-badge-active" href="/api/routes/export.csv" style={{display: 'inline-flex', marginBottom: '1rem', textDecoration: 'none'}}>EXPORT ROUTE AUDIT CSV</a>}
 
         <div className="path-grid">
           {recommendations.map((rec, idx) => (
@@ -222,6 +227,11 @@ const RouteRecommender = ({ onNavigate }) => {
               </div>
               <div style={{padding: '1.25rem'}}>
                 <h3 style={{fontSize: '0.9rem', fontWeight: 700, marginBottom: '1.5rem'}}>{rec.explanation}</h3>
+                <div style={{display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.4rem', marginBottom: '1rem', fontSize: '0.7rem'}}>
+                  <div><span style={{color: '#64748b'}}>P50</span><br/><b>{rec.confidence_band.p50_hours}h</b></div>
+                  <div><span style={{color: '#64748b'}}>P85</span><br/><b style={{color: '#fbbf24'}}>{rec.confidence_band.p85_hours}h</b></div>
+                  <div><span style={{color: '#64748b'}}>P95</span><br/><b>{rec.confidence_band.p95_hours}h</b></div>
+                </div>
                 
                 <div style={{display: 'flex', flexDirection: 'column', gap: '0.75rem', borderLeft: '2px solid #1e293b', paddingLeft: '1rem', marginLeft: '0.5rem'}}>
                   {rec.legs.map((leg, lIdx) => {

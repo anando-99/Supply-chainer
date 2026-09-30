@@ -1,4 +1,7 @@
-import feedparser
+try:
+    import feedparser
+except ImportError:  # Keep routing available when the optional RSS client is absent.
+    feedparser = None
 import urllib.parse
 import time
 import socket
@@ -39,6 +42,8 @@ class DynamicNewsIngestor:
         t_start = time.perf_counter()
         print(f"[TRACE] STEP 7: News ingestion started for {location}")
         try:
+            if feedparser is None:
+                raise RuntimeError("RSS parser is not installed")
             encoded_query = urllib.parse.quote(query)
             rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=en-US&gl=US&ceid=US:en"
             
